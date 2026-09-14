@@ -4,7 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 use tokio::net::lookup_host;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -61,6 +61,7 @@ async fn run_bot() {
         .arg(&game_pass)
         .arg("--OpponentId")
         .arg(opponent_id)
+        .args(requested_bot_args())
         .current_dir("/bot");
 
     info!("Starting bot with command {:?}", &command);
@@ -74,6 +75,33 @@ async fn run_bot() {
             panic!("Bot process failed with error: {}", e);
         }
     };
+}
+
+/// Extra arguments the requester of this match asked this bot to be started
+/// with, as a JSON array of strings in BOT_ARGS. Ladder matches never carry
+/// any, so an absent or empty value is the normal case.
+///
+/// A value we can't read costs the requester their arguments, not the match:
+/// the bot still starts, and the match still produces a result.
+fn requested_bot_args() -> Vec<String> {
+    let raw = match std::env::var("BOT_ARGS") {
+        Ok(raw) => raw,
+        Err(_) => return Vec::new(),
+    };
+    parse_bot_args(&raw)
+}
+
+fn parse_bot_args(raw: &str) -> Vec<String> {
+    if raw.trim().is_empty() {
+        return Vec::new();
+    }
+    match serde_json::from_str::<Vec<String>>(raw) {
+        Ok(args) => args,
+        Err(e) => {
+            warn!("Ignoring unreadable BOT_ARGS {:?}: {}", raw, e);
+            Vec::new()
+        }
+    }
 }
 
 fn init_controller_logs() -> (tracing_appender::non_blocking::WorkerGuard, tracing_appender::non_blocking::WorkerGuard) {
@@ -172,5 +200,37 @@ async fn wait_for_sigterm() {
             let _ = sigterm.recv().await;
             info!("Received SIGTERM, shutting down gracefully");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_bot_args;
+
+    #[test]
+    fn no_args_is_the_normal_case() {
+        assert!(parse_bot_args("").is_empty());
+        assert!(parse_bot_args("   ").is_empty());
+        assert!(parse_bot_args("[]").is_empty());
+    }
+
+    #[test]
+    fn args_arrive_as_separate_arguments() {
+        assert_eq!(parse_bot_args(r#"["--tournament=worldcup","--build=cheese"]"#), vec!["--tournament=worldcup", "--build=cheese"]);
+    }
+
+    #[test]
+    fn an_argument_may_contain_spaces() {
+        // The website splits the requester's string shell-style, so a quoted
+        // space stays inside one argument. Going through JSON rather than a
+        // space-separated list is what keeps it there.
+        assert_eq!(parse_bot_args(r#"["--message=good luck"]"#), vec!["--message=good luck"]);
+    }
+
+    #[test]
+    fn unreadable_args_are_dropped_rather_than_fatal() {
+        assert!(parse_bot_args("not json").is_empty());
+        assert!(parse_bot_args(r#"{"a": 1}"#).is_empty());
+        assert!(parse_bot_args("[1, 2]").is_empty());
     }
 }
