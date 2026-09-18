@@ -99,8 +99,8 @@ spec:
               value: '10001'
             - name: OPPONENT_ID
               value: 'PLACEHOLDER_BOT2_ID'
-            # Extra arguments requested for this bot, as a JSON array of strings.
-            # Substituted by the controller as a quoted scalar - do not add quotes here.
+            # The extra command line requested for this bot, verbatim; the bot
+            # controller splits it. Substituted as a quoted scalar - add no quotes here.
             - name: BOT_ARGS
               value: PLACEHOLDER_BOT1_ARGS
           resources:
@@ -129,8 +129,8 @@ spec:
               value: '10002'
             - name: OPPONENT_ID
               value: 'PLACEHOLDER_BOT1_ID'
-            # Extra arguments requested for this bot, as a JSON array of strings.
-            # Substituted by the controller as a quoted scalar - do not add quotes here.
+            # The extra command line requested for this bot, verbatim; the bot
+            # controller splits it. Substituted as a quoted scalar - add no quotes here.
             - name: BOT_ARGS
               value: PLACEHOLDER_BOT2_ARGS
           resources:

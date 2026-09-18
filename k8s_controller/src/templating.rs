@@ -12,11 +12,11 @@ pub struct JobTemplateValues {
     pub bot1_controller_image: String,
     pub bot1_name: String,
     pub bot1_id: String,
-    pub bot1_args: Vec<String>,
+    pub bot1_args: String,
     pub bot2_controller_image: String,
     pub bot2_name: String,
     pub bot2_id: String,
-    pub bot2_args: Vec<String>,
+    pub bot2_args: String,
 }
 
 // Replaces all placeholders in the job template with actual values
@@ -43,19 +43,24 @@ pub fn render_job_template(template: &str, values: &JobTemplateValues) -> anyhow
     Ok(job)
 }
 
-// Renders bot arguments as a single YAML scalar holding a JSON array, which is
-// what the bot controller reads back out of its BOT_ARGS environment variable.
+// Renders one bot's requested command line as a YAML scalar, which the bot
+// controller reads back out of its BOT_ARGS environment variable and splits
+// there. The string is passed through unchanged; only its YAML representation
+// is chosen here.
 //
-// Every other value substituted into the template is one we chose; these come
-// from whoever requested the match. So they are never spliced in raw: the
-// scalar is emitted by the YAML serializer, which quotes and escapes whatever
-// it is given, and the placeholder in the template carries no quotes of its own
-// for a value to close early. A hostile string can therefore only ever end up
-// as the contents of BOT_ARGS, never as document structure.
-fn bot_args_scalar(args: &[String]) -> anyhow::Result<String> {
-    let json = serde_json::to_string(args)?;
-    let yaml = serde_yml::to_string(&json)?;
-    Ok(yaml.trim_end().to_string())
+// Every other value substituted into the template is one we chose; this one
+// comes from whoever requested the match. So it is never spliced in raw. It is
+// emitted as JSON, which is a valid YAML double-quoted scalar and is always a
+// single line: every character that would end the scalar or start a new node is
+// escaped, so a hostile string can only ever be the contents of BOT_ARGS, never
+// document structure.
+//
+// Single-line matters as much as escaped. The YAML serializer would render a
+// string containing a newline as a multi-line scalar, which then doesn't match
+// the indentation of the placeholder it replaces and fails the whole render --
+// safe, but it would strand the match it belongs to.
+fn bot_args_scalar(args: &str) -> anyhow::Result<String> {
+    Ok(serde_json::to_string(args)?)
 }
 
 #[cfg(test)]
@@ -74,11 +79,11 @@ mod tests {
             bot1_controller_image: "aiarena/arenaclient-bot:latest".to_string(),
             bot1_name: "basic_bot".to_string(),
             bot1_id: "bot-id-1".to_string(),
-            bot1_args: vec![],
+            bot1_args: String::new(),
             bot2_controller_image: "aiarena/arenaclient-bot:latest".to_string(),
             bot2_name: "loser_bot".to_string(),
             bot2_id: "bot-id-2".to_string(),
-            bot2_args: vec![],
+            bot2_args: String::new(),
         }
     }
 
@@ -107,39 +112,35 @@ mod tests {
     fn renders_without_bot_args() {
         let job = render_job_template(include_str!("../templates/ac-job.yaml"), &values()).unwrap();
 
-        assert_eq!(bot_args_env(&job, "bot-controller-1"), "[]");
-        assert_eq!(bot_args_env(&job, "bot-controller-2"), "[]");
+        assert_eq!(bot_args_env(&job, "bot-controller-1"), "");
+        assert_eq!(bot_args_env(&job, "bot-controller-2"), "");
     }
 
     #[test]
-    fn renders_bot_args_per_bot() {
+    fn passes_each_bots_command_line_through_unchanged() {
         let mut values = values();
-        values.bot1_args = vec!["--tournament=worldcup".to_string()];
-        values.bot2_args = vec!["--tournament=worldcup".to_string(), "--build=all in".to_string()];
+        values.bot1_args = "--tournament=worldcup".to_string();
+        values.bot2_args = r#"--tournament=worldcup --build="all in""#.to_string();
 
         let job = render_job_template(include_str!("../templates/ac-job.yaml"), &values).unwrap();
 
-        assert_eq!(bot_args_env(&job, "bot-controller-1"), r#"["--tournament=worldcup"]"#);
-        assert_eq!(bot_args_env(&job, "bot-controller-2"), r#"["--tournament=worldcup","--build=all in"]"#);
+        assert_eq!(bot_args_env(&job, "bot-controller-1"), "--tournament=worldcup");
+        assert_eq!(bot_args_env(&job, "bot-controller-2"), r#"--tournament=worldcup --build="all in""#);
     }
 
     #[test]
     fn bot_args_cannot_escape_into_the_document() {
         // These come from a match requester, so try to close the scalar and add
         // structure of our own. Each must survive as plain text inside BOT_ARGS.
-        let hostile = vec![
-            "--x\"\n            - name: SNEAK\n              value: pwned".to_string(),
-            "--y'\n  evil: true".to_string(),
-            "--z: {a: b} # ---".to_string(),
-        ];
+        let hostile = "--x\"\n            - name: SNEAK\n              value: pwned\n  evil: {a: b} # --- 'x' \\ \t";
 
         let mut values = values();
-        values.bot1_args = hostile.clone();
+        values.bot1_args = hostile.to_string();
 
         let job = render_job_template(include_str!("../templates/ac-job.yaml"), &values).unwrap();
 
-        assert_eq!(bot_args_env(&job, "bot-controller-1"), serde_json::to_string(&hostile).unwrap());
-        assert_eq!(bot_args_env(&job, "bot-controller-2"), "[]");
+        assert_eq!(bot_args_env(&job, "bot-controller-1"), hostile);
+        assert_eq!(bot_args_env(&job, "bot-controller-2"), "");
 
         let spec = job.spec.as_ref().unwrap().template.spec.as_ref().unwrap();
         let bot1 = spec.init_containers.as_ref().unwrap().iter().find(|c| c.name == "bot-controller-1").unwrap();

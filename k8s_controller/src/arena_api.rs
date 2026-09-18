@@ -26,12 +26,13 @@ pub struct MatchInfo {
     pub id: String,
     pub participant1: Participant,
     pub participant2: Participant,
-    /// Extra arguments the match requester asked each bot to be started with.
-    /// Empty for ladder matches, which never carry any.
+    /// The extra command line the match requester asked each bot to be started
+    /// with, exactly as they typed it. Empty for ladder matches, which never
+    /// carry one. Nullable on the website, hence the Option.
     #[serde(default)]
-    pub bot1_args: Vec<String>,
+    pub bot1_args: Option<String>,
     #[serde(default)]
-    pub bot2_args: Vec<String>,
+    pub bot2_args: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -130,27 +131,30 @@ mod tests {
         // Pins the field names against the website's schema: these are spelled
         // bot1Args/bot2Args there, and a silent mismatch here would look
         // exactly like a match that was requested without any arguments.
-        let m = parse_next_match(&response(r#", "bot1Args": ["--tournament=worldcup"], "bot2Args": ["--tournament=worldcup", "--build=all in"]"#)).unwrap();
+        let m = parse_next_match(&response(r#", "bot1Args": "--tournament=worldcup", "bot2Args": "--tournament=worldcup --build=\"all in\"""#)).unwrap();
 
         assert_eq!(m.id, "42");
-        assert_eq!(m.bot1_args, vec!["--tournament=worldcup"]);
-        assert_eq!(m.bot2_args, vec!["--tournament=worldcup", "--build=all in"]);
+        assert_eq!(m.bot1_args.as_deref(), Some("--tournament=worldcup"));
+        assert_eq!(m.bot2_args.as_deref(), Some(r#"--tournament=worldcup --build="all in""#));
     }
 
     #[test]
     fn a_ladder_match_carries_no_bot_args() {
-        let m = parse_next_match(&response(r#", "bot1Args": [], "bot2Args": []"#)).unwrap();
+        let m = parse_next_match(&response(r#", "bot1Args": "", "bot2Args": """#)).unwrap();
 
-        assert!(m.bot1_args.is_empty());
-        assert!(m.bot2_args.is_empty());
+        assert_eq!(m.bot1_args.as_deref(), Some(""));
+        assert_eq!(m.bot2_args.as_deref(), Some(""));
     }
 
     #[test]
-    fn bot_args_missing_from_the_response_is_not_an_error() {
-        let m = parse_next_match(&response("")).unwrap();
+    fn null_or_missing_bot_args_is_not_an_error() {
+        // The website's columns are nullable, so both shapes can arrive.
+        let m = parse_next_match(&response(r#", "bot1Args": null, "bot2Args": null"#)).unwrap();
+        assert_eq!(m.bot1_args, None);
 
+        let m = parse_next_match(&response("")).unwrap();
         assert_eq!(m.participant1.name, "basic_bot");
-        assert!(m.bot1_args.is_empty());
-        assert!(m.bot2_args.is_empty());
+        assert_eq!(m.bot1_args, None);
+        assert_eq!(m.bot2_args, None);
     }
 }
